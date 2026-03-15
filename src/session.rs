@@ -9,6 +9,7 @@ use crate::{
     configs::Config,
     dirty_paths::DirtyUtf8Path,
     error::TmsError,
+    remote::find_remote_projects,
     repos::{find_repos, find_submodules, RepoProvider},
     tmux::Tmux,
     Result,
@@ -22,6 +23,10 @@ pub struct Session {
 pub enum SessionType {
     Git(RepoProvider),
     Bookmark(PathBuf),
+    Remote {
+        host: String,
+        remote_path: String,
+    },
 }
 
 impl Session {
@@ -34,6 +39,7 @@ impl Session {
             SessionType::Git(repo) if repo.is_bare() => repo.path(),
             SessionType::Git(repo) => repo.path().parent().unwrap(),
             SessionType::Bookmark(path) => path,
+            SessionType::Remote { .. } => Path::new("/tmp"),
         }
     }
 
@@ -41,6 +47,9 @@ impl Session {
         match &self.session_type {
             SessionType::Git(repo) => self.switch_to_repo_session(repo, tmux, config),
             SessionType::Bookmark(path) => self.switch_to_bookmark_session(tmux, path, config),
+            SessionType::Remote { host, remote_path } => {
+                self.switch_to_remote_session(tmux, host, remote_path)
+            }
         }
     }
 
@@ -84,6 +93,24 @@ impl Session {
 
         Ok(())
     }
+
+    fn switch_to_remote_session(
+        &self,
+        tmux: &Tmux,
+        host: &str,
+        remote_path: &str,
+    ) -> Result<()> {
+        let session_name = self.name.replace('.', "_");
+
+        if !tmux.session_exists(&session_name) {
+            let ssh_command = format!("ssh -t {} 'cd {} && exec $SHELL'", host, remote_path);
+            tmux.new_session_with_command(Some(&session_name), &ssh_command);
+        }
+
+        tmux.switch_to_session(&session_name);
+
+        Ok(())
+    }
 }
 
 pub trait SessionContainer {
@@ -112,6 +139,7 @@ impl SessionContainer for HashMap<String, Session> {
 pub fn create_sessions(config: &Config) -> Result<impl SessionContainer> {
     let mut sessions = find_repos(config)?;
     sessions = append_bookmarks(config, sessions)?;
+    sessions = append_remote_projects(config, sessions)?;
 
     let sessions = generate_session_container(sessions, config)?;
 
@@ -230,6 +258,35 @@ fn append_bookmarks(
             list.push(session);
         } else {
             sessions.insert(session.name.clone(), vec![session]);
+        }
+    }
+
+    Ok(sessions)
+}
+
+fn append_remote_projects(
+    config: &Config,
+    mut sessions: HashMap<String, Vec<Session>>,
+) -> Result<HashMap<String, Vec<Session>>> {
+    let remote_projects = find_remote_projects(config)?;
+    let display_format = config
+        .remote_display_format
+        .clone()
+        .unwrap_or_default();
+
+    for project in remote_projects {
+        let display_name = display_format.format(&project.project_name, &project.host_name);
+        let session = Session::new(
+            display_name.clone(),
+            SessionType::Remote {
+                host: project.host,
+                remote_path: project.remote_path,
+            },
+        );
+        if let Some(list) = sessions.get_mut(&display_name) {
+            list.push(session);
+        } else {
+            sessions.insert(display_name, vec![session]);
         }
     }
 

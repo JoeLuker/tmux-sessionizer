@@ -54,6 +54,8 @@ pub struct Config {
     pub marks: Option<HashMap<String, String>>,
     pub clone_repo_switch: Option<CloneRepoSwitchConfig>,
     pub vcs_providers: Option<Vec<VcsProviders>>,
+    pub remote_hosts: Option<Vec<RemoteHost>>,
+    pub remote_display_format: Option<RemoteDisplayFormat>,
 }
 
 pub const DEFAULT_VCS_PROVIDERS: &[VcsProviders] = &[VcsProviders::Git];
@@ -84,6 +86,8 @@ pub struct ConfigExport {
     pub marks: HashMap<String, String>,
     pub clone_repo_switch: CloneRepoSwitchConfig,
     pub vcs_providers: Vec<VcsProviders>,
+    pub remote_hosts: Vec<RemoteHost>,
+    pub remote_display_format: RemoteDisplayFormat,
 }
 
 impl From<Config> for ConfigExport {
@@ -111,6 +115,8 @@ impl From<Config> for ConfigExport {
             marks: value.marks.unwrap_or_default(),
             clone_repo_switch: value.clone_repo_switch.unwrap_or_default(),
             vcs_providers: value.vcs_providers.unwrap_or(DEFAULT_VCS_PROVIDERS.into()),
+            remote_hosts: value.remote_hosts.unwrap_or_default(),
+            remote_display_format: value.remote_display_format.unwrap_or_default(),
         }
     }
 }
@@ -470,4 +476,47 @@ impl ValueEnum for CloneRepoSwitchConfig {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
     pub create_script: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct RemoteHost {
+    pub name: String,
+    pub host: String,
+    pub search_paths: Vec<String>,
+    #[serde(default = "default_max_depth")]
+    pub max_depth: usize,
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_auto_refresh")]
+    pub auto_refresh: bool,
+}
+
+fn default_max_depth() -> usize {
+    3
+}
+
+fn default_cache_ttl() -> u64 {
+    3600
+}
+
+fn default_auto_refresh() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+pub enum RemoteDisplayFormat {
+    #[default]
+    Suffix,
+    Prefix,
+    Colon,
+}
+
+impl RemoteDisplayFormat {
+    pub fn format(&self, project_name: &str, host_name: &str) -> String {
+        match self {
+            RemoteDisplayFormat::Suffix => format!("{}@{}", project_name, host_name),
+            RemoteDisplayFormat::Prefix => format!("[{}] {}", host_name, project_name),
+            RemoteDisplayFormat::Colon => format!("{}:{}", host_name, project_name),
+        }
+    }
 }
