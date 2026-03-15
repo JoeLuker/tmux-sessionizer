@@ -298,7 +298,7 @@ fn start_command(config: Config, tmux: &Tmux) -> Result<()> {
                 .transpose()
                 .change_context(TmsError::IoError)?;
 
-            tmux.new_session(session.name.as_deref(), session_path.as_deref());
+            tmux.new_session(session.name.as_deref(), session_path.as_deref(), None);
 
             if let Some(windows) = &session.windows {
                 for window in windows {
@@ -466,13 +466,8 @@ fn config_command(cmd: &ConfigCommand, mut config: Config) -> Result<()> {
         }
     }
     if let Some(dirs) = &args.remove_dir {
-        let current_excluded = config.excluded_dirs;
-        match current_excluded {
-            Some(mut excl_dirs) => {
-                dirs.iter().for_each(|dir| excl_dirs.retain(|x| x != dir));
-                config.excluded_dirs = Some(excl_dirs);
-            }
-            None => todo!(),
+        if let Some(ref mut excl_dirs) = config.excluded_dirs {
+            dirs.iter().for_each(|dir| excl_dirs.retain(|x| x != dir));
         }
     }
 
@@ -765,7 +760,7 @@ fn clone_repo_command(args: &CloneRepoCommand, config: Config, tmux: &Tmux) -> R
         );
     }
 
-    tmux.new_session(Some(&session_name), Some(&path.display().to_string()));
+    tmux.new_session(Some(&session_name), Some(&path.display().to_string()), None);
     tmux.set_up_tmux_env(&repo, &session_name, &config)?;
     if switch {
         tmux.switch_to_session(&session_name);
@@ -811,7 +806,7 @@ fn init_repo_command(args: &InitRepoCommand, config: Config, tmux: &Tmux) -> Res
         );
     }
 
-    tmux.new_session(Some(&session_name), Some(&path.display().to_string()));
+    tmux.new_session(Some(&session_name), Some(&path.display().to_string()), None);
     tmux.set_up_tmux_env(&repo, &session_name, &config)?;
     tmux.switch_to_session(&session_name);
 
@@ -902,56 +897,21 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    let ppw = args.panes_per_window;
     let session_name = "resume-grid";
 
-    // Kill old resume-grid if it exists
-    tmux.kill_session(session_name);
+    // Build resume commands for each selected session
+    let commands: Vec<String> = selected_sessions
+        .iter()
+        .map(|cs| {
+            format!(
+                "cd {} && claude --resume {}",
+                shell_escape(&cs.project),
+                &cs.session_id
+            )
+        })
+        .collect();
 
-    for (i, cs) in selected_sessions.iter().enumerate() {
-        let resume_cmd = format!(
-            "cd {} && claude --resume {}",
-            shell_escape(&cs.project),
-            &cs.session_id
-        );
-        let window_idx = i / ppw;
-
-        if i == 0 {
-            // First pane: create session with first window
-            tmux.execute_tmux_command_pub(&[
-                "new-session", "-d", "-s", session_name, "-x", "200", "-y", "50",
-                "bash", "-c", &format!("{}; exec bash", resume_cmd),
-            ]);
-        } else if i % ppw == 0 {
-            // First pane of a new window
-            tmux.execute_tmux_command_pub(&[
-                "new-window", "-t", session_name,
-                "bash", "-c", &format!("{}; exec bash", resume_cmd),
-            ]);
-        } else {
-            // Split within current window
-            let target = format!("{}:{}", session_name, window_idx);
-            tmux.execute_tmux_command_pub(&[
-                "split-window", "-t", &target,
-                "bash", "-c", &format!("{}; exec bash", resume_cmd),
-            ]);
-
-            // Re-tile after each split to keep the grid even
-            tmux.execute_tmux_command_pub(&[
-                "select-layout", "-t", &target, "tiled",
-            ]);
-        }
-    }
-
-    // Final tiling pass on all windows
-    let num_windows = (selected_sessions.len() + ppw - 1) / ppw;
-    for w in 0..num_windows {
-        let target = format!("{}:{}", session_name, w);
-        tmux.execute_tmux_command_pub(&["select-layout", "-t", &target, "tiled"]);
-    }
-
-    // Select first window
-    tmux.execute_tmux_command_pub(&["select-window", "-t", &format!("{}:0", session_name)]);
+    crate::grid::build_pane_grid(tmux, session_name, commands, args.panes_per_window)?;
 
     tmux.switch_to_session(session_name);
 

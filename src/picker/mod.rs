@@ -54,7 +54,7 @@ pub struct Picker<'a> {
     tmux: &'a Tmux,
     active_sessions: Option<HashSet<String>>,
     multi_select: bool,
-    selected_items: HashSet<u32>,
+    selected_items: HashSet<String>,
 }
 
 impl<'a> Picker<'a> {
@@ -301,9 +301,9 @@ impl<'a> Picker<'a> {
         let matches = snapshot
             .matched_items(..snapshot.matched_item_count())
             .enumerate()
-            .map(|(idx, item)| {
+            .map(|(_idx, item)| {
                 let text = item.data.as_str();
-                let checked = multi && self.is_item_selected(idx as u32);
+                let checked = multi && self.is_item_selected(text);
                 let prefix = if multi {
                     if checked { "[x] " } else { "[ ] " }
                 } else {
@@ -420,11 +420,13 @@ impl<'a> Picker<'a> {
 
     fn toggle_selected(&mut self) {
         if let Some(index) = self.selection.selected() {
-            let matched_index = index as u32;
-            if self.selected_items.contains(&matched_index) {
-                self.selected_items.remove(&matched_index);
-            } else {
-                self.selected_items.insert(matched_index);
+            if let Some(item) = self.matcher.snapshot().get_matched_item(index as u32) {
+                let data = item.data.clone();
+                if self.selected_items.contains(&data) {
+                    self.selected_items.remove(&data);
+                } else {
+                    self.selected_items.insert(data);
+                }
             }
             // Move to next item after toggling
             self.move_down();
@@ -436,8 +438,8 @@ impl<'a> Picker<'a> {
         let mut result = Vec::new();
         // Return in the order they appear in the list (preserves sort)
         for idx in 0..snapshot.matched_item_count() {
-            if self.selected_items.contains(&idx) {
-                if let Some(item) = snapshot.get_matched_item(idx) {
+            if let Some(item) = snapshot.get_matched_item(idx) {
+                if self.selected_items.contains(item.data.as_str()) {
                     result.push(item.data.clone());
                 }
             }
@@ -445,8 +447,8 @@ impl<'a> Picker<'a> {
         result
     }
 
-    fn is_item_selected(&self, matched_index: u32) -> bool {
-        self.selected_items.contains(&matched_index)
+    fn is_item_selected(&self, item_text: &str) -> bool {
+        self.selected_items.contains(item_text)
     }
 
     fn move_up(&mut self) {

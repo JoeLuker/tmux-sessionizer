@@ -2,6 +2,7 @@ pub mod cli;
 pub mod configs;
 pub mod dirty_paths;
 pub mod error;
+pub mod grid;
 pub mod keymap;
 pub mod marks;
 pub mod picker;

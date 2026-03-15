@@ -36,8 +36,23 @@ impl Tmux {
             .unwrap_or_else(|_| panic!("Failed to execute the tmux command `{args:?}`"))
     }
 
-    pub fn execute_tmux_command_pub(&self, args: &[&str]) -> process::Output {
-        self.execute_tmux_command(args)
+    pub fn split_window_pane(&self, target: Option<&str>, command: Option<&str>) -> process::Output {
+        let mut args = vec!["split-window"];
+        if let Some(t) = target {
+            args.extend(["-t", t]);
+        }
+        if let Some(cmd) = command {
+            args.push(cmd);
+        }
+        self.execute_tmux_command(&args)
+    }
+
+    pub fn select_layout(&self, target: &str, layout: &str) -> process::Output {
+        self.execute_tmux_command(&["select-layout", "-t", target, layout])
+    }
+
+    pub fn select_window_by_token(&self, target: &str) -> process::Output {
+        self.execute_tmux_command(&["select-window", "-t", target])
     }
 
     fn replace_with_tmux_command(&self, args: &[&str]) -> std::io::Error {
@@ -61,7 +76,12 @@ impl Tmux {
 
     // sessions
 
-    pub fn new_session(&self, name: Option<&str>, path: Option<&str>) -> process::Output {
+    pub fn new_session(
+        &self,
+        name: Option<&str>,
+        path: Option<&str>,
+        command: Option<&str>,
+    ) -> process::Output {
         let mut args = vec!["new-session", "-d"];
 
         if let Some(name) = name {
@@ -72,18 +92,11 @@ impl Tmux {
             args.extend(["-c", path]);
         }
 
-        self.execute_tmux_command(&args)
-    }
-
-    pub fn new_session_with_command(&self, name: Option<&str>, command: &str) -> process::Output {
-        let mut args = vec!["new-session", "-d"];
-
-        if let Some(name) = name {
-            args.extend(["-s", name]);
-        };
-
-        let shell_cmd = format!("{} ; exec $SHELL", command);
-        args.push(&shell_cmd);
+        let shell_cmd;
+        if let Some(cmd) = command {
+            shell_cmd = format!("{} ; exec $SHELL", cmd);
+            args.push(&shell_cmd);
+        }
 
         self.execute_tmux_command(&args)
     }
