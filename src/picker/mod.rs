@@ -1,8 +1,8 @@
 mod preview;
 
-use std::{process, rc::Rc, sync::Arc};
+use std::{collections::HashSet, process, rc::Rc, sync::Arc};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use nucleo::{
     pattern::{CaseMatching, Normalization},
     Nucleo,
@@ -52,7 +52,9 @@ pub struct Picker<'a> {
     keymap: Keymap,
     input_position: InputPosition,
     tmux: &'a Tmux,
-    active_sessions: Option<std::collections::HashSet<String>>,
+    active_sessions: Option<HashSet<String>>,
+    multi_select: bool,
+    selected_items: HashSet<u32>,
 }
 
 impl<'a> Picker<'a> {
@@ -88,6 +90,8 @@ impl<'a> Picker<'a> {
             input_position,
             tmux,
             active_sessions: None,
+            multi_select: false,
+            selected_items: HashSet::new(),
         }
     }
 
@@ -97,9 +101,14 @@ impl<'a> Picker<'a> {
         self
     }
 
-    pub fn set_active_sessions(mut self, active: std::collections::HashSet<String>) -> Self {
+    pub fn set_active_sessions(mut self, active: HashSet<String>) -> Self {
         self.active_sessions = Some(active);
 
+        self
+    }
+
+    pub fn set_multi_select(mut self, multi: bool) -> Self {
+        self.multi_select = multi;
         self
     }
 
@@ -113,6 +122,64 @@ impl<'a> Picker<'a> {
         ratatui::restore();
 
         Ok(selected_str?)
+    }
+
+    pub fn run_multi(&mut self) -> Result<Vec<String>> {
+        self.multi_select = true;
+        let mut terminal = ratatui::init();
+
+        let result = self
+            .multi_loop(&mut terminal)
+            .map_err(|e| TmsError::TuiError(e.to_string()));
+
+        ratatui::restore();
+
+        Ok(result?)
+    }
+
+    fn multi_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<Vec<String>> {
+        loop {
+            self.matcher.tick(10);
+            self.update_selection();
+            terminal
+                .draw(|f| self.render(f))
+                .map_err(|e| TmsError::TuiError(e.to_string()))?;
+
+            if let Event::Key(key) = event::read().map_err(|e| TmsError::TuiError(e.to_string()))? {
+                if key.kind == KeyEventKind::Press {
+                    match self.keymap.0.get(&key.into()) {
+                        Some(PickerAction::Cancel) => return Ok(self.get_all_selected()),
+                        Some(PickerAction::Confirm) => {
+                            // Tab or Enter toggles selection
+                            self.toggle_selected();
+                        }
+                        Some(PickerAction::Backspace) => self.remove_filter(),
+                        Some(PickerAction::Delete) => self.delete(),
+                        Some(PickerAction::DeleteWord) => self.delete_word(),
+                        Some(PickerAction::DeleteToLineStart) => self.delete_to_line(false),
+                        Some(PickerAction::DeleteToLineEnd) => self.delete_to_line(true),
+                        Some(PickerAction::MoveUp) => self.move_up(),
+                        Some(PickerAction::MoveDown) => self.move_down(),
+                        Some(PickerAction::CursorLeft) => self.move_cursor_left(),
+                        Some(PickerAction::CursorRight) => self.move_cursor_right(),
+                        Some(PickerAction::MoveToLineStart) => self.move_to_start(),
+                        Some(PickerAction::MoveToLineEnd) => self.move_to_end(),
+                        Some(PickerAction::Noop) => {}
+                        None => {
+                            // Check for Tab key (not in keymap by default)
+                            if key.code == KeyCode::Tab {
+                                self.toggle_selected();
+                            } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                // Ctrl-D to finish
+                                return Ok(self.get_all_selected());
+                            } else if let KeyCode::Char(c) = key.code {
+                                self.update_filter(c)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn main_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<Option<String>> {
@@ -230,19 +297,30 @@ impl<'a> Picker<'a> {
             .split(preview_split[picker_pane]);
 
         let snapshot = self.matcher.snapshot();
+        let multi = self.multi_select;
         let matches = snapshot
             .matched_items(..snapshot.matched_item_count())
-            .map(|item| {
+            .enumerate()
+            .map(|(idx, item)| {
                 let text = item.data.as_str();
-                // Check if this is an active session (make it bold)
+                let checked = multi && self.is_item_selected(idx as u32);
+                let prefix = if multi {
+                    if checked { "[x] " } else { "[ ] " }
+                } else {
+                    ""
+                };
+                let display = format!("{}{}", prefix, text);
+
+                if checked {
+                    return ListItem::new(Span::styled(display, Style::default().fg(ratatui::style::Color::Green).bold()));
+                }
                 if let Some(ref active) = self.active_sessions {
-                    // Tmux normalizes both dots and hyphens to underscores in session names
                     let normalized = text.replace(['.', '-'], "_");
                     if active.contains(text) || active.contains(&normalized) {
-                        return ListItem::new(Span::styled(text, Style::default().bold()));
+                        return ListItem::new(Span::styled(display, Style::default().bold()));
                     }
                 }
-                ListItem::new(text)
+                ListItem::new(display)
             });
 
         let colors = if let Some(colors) = self.colors {
@@ -262,11 +340,20 @@ impl<'a> Picker<'a> {
                     .border_style(Style::default().fg(colors.border_color()))
                     .title_style(Style::default().fg(colors.info_color()))
                     .title_position(title_position)
-                    .title(format!(
-                        "{}/{}",
-                        snapshot.matched_item_count(),
-                        snapshot.item_count()
-                    )),
+                    .title(if self.multi_select {
+                        format!(
+                            "{} selected | {}/{} | Tab:toggle ESC:done",
+                            self.selected_items.len(),
+                            snapshot.matched_item_count(),
+                            snapshot.item_count()
+                        )
+                    } else {
+                        format!(
+                            "{}/{}",
+                            snapshot.matched_item_count(),
+                            snapshot.item_count()
+                        )
+                    }),
             );
         f.render_stateful_widget(table, layout[list_index], &mut self.selection);
 
@@ -329,6 +416,37 @@ impl<'a> Picker<'a> {
         }
 
         None
+    }
+
+    fn toggle_selected(&mut self) {
+        if let Some(index) = self.selection.selected() {
+            let matched_index = index as u32;
+            if self.selected_items.contains(&matched_index) {
+                self.selected_items.remove(&matched_index);
+            } else {
+                self.selected_items.insert(matched_index);
+            }
+            // Move to next item after toggling
+            self.move_down();
+        }
+    }
+
+    fn get_all_selected(&self) -> Vec<String> {
+        let snapshot = self.matcher.snapshot();
+        let mut result = Vec::new();
+        // Return in the order they appear in the list (preserves sort)
+        for idx in 0..snapshot.matched_item_count() {
+            if self.selected_items.contains(&idx) {
+                if let Some(item) = snapshot.get_matched_item(idx) {
+                    result.push(item.data.clone());
+                }
+            }
+        }
+        result
+    }
+
+    fn is_item_selected(&self, matched_index: u32) -> bool {
+        self.selected_items.contains(&matched_index)
     }
 
     fn move_up(&mut self) {
