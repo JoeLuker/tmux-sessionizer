@@ -36,6 +36,10 @@ impl Tmux {
             .unwrap_or_else(|_| panic!("Failed to execute the tmux command `{args:?}`"))
     }
 
+    pub fn execute_tmux_command_pub(&self, args: &[&str]) -> process::Output {
+        self.execute_tmux_command(args)
+    }
+
     fn replace_with_tmux_command(&self, args: &[&str]) -> std::io::Error {
         process::Command::new("tmux")
             .args(["-L", &self.socket_name])

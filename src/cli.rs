@@ -64,6 +64,18 @@ pub enum CliCommand {
     Marks(MarksCommand),
     /// Refresh the cached project list for all configured remote hosts
     RefreshRemote,
+    /// Pick recent Claude sessions to resume in a pane grid (6 per tab)
+    Resume(ResumeCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct ResumeCommand {
+    #[arg(short, long, default_value = "50")]
+    /// Maximum number of recent sessions to show
+    max: usize,
+    #[arg(short, long, default_value = "6")]
+    /// Panes per window before creating a new tab
+    panes_per_window: usize,
 }
 
 #[derive(Debug, Args)]
@@ -263,6 +275,11 @@ impl Cli {
             Some(CliCommand::RefreshRemote) => {
                 let total = crate::remote::refresh_remote_cache(&config)?;
                 println!("Refreshed remote cache: {} total projects", total);
+                Ok(SubCommandGiven::Yes)
+            }
+
+            Some(CliCommand::Resume(args)) => {
+                resume_command(args, config, tmux)?;
                 Ok(SubCommandGiven::Yes)
             }
 
@@ -845,6 +862,89 @@ fn open_session_completion_candidates() -> Vec<CompletionCandidate> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<()> {
+    use crate::resume::load_claude_sessions;
+
+    let all_sessions = load_claude_sessions(args.max)?;
+    if all_sessions.is_empty() {
+        eprintln!("No Claude sessions found in ~/.claude/history.jsonl");
+        return Ok(());
+    }
+
+    let display_lines: Vec<String> = all_sessions.iter().map(|s| s.display_line()).collect();
+
+    // Multi-select picker — Tab to toggle, ESC when done
+    let selected_lines = {
+        let mut picker = crate::picker::Picker::new(
+            &display_lines,
+            None,
+            config.shortcuts.as_ref(),
+            config.input_position.unwrap_or_default(),
+            tmux,
+        )
+        .set_colors(config.picker_colors.as_ref())
+        .set_multi_select(true);
+        picker.run_multi()?
+    };
+
+    if selected_lines.is_empty() {
+        return Ok(());
+    }
+
+    // Map selected display lines back to sessions
+    let selected_sessions: Vec<&crate::resume::ClaudeSession> = selected_lines
+        .iter()
+        .filter_map(|line| {
+            let idx = display_lines.iter().position(|dl| dl == line)?;
+            Some(&all_sessions[idx])
+        })
+        .collect();
+
+    let panes_per_window = args.panes_per_window;
+    let resume_session = "resume-grid";
+
+    // Kill old resume-grid if it exists
+    tmux.kill_session(resume_session);
+
+    for (i, session) in selected_sessions.iter().enumerate() {
+        let cmd = format!(
+            "cd {} && claude --resume {}",
+            shell_escape(&session.project),
+            &session.session_id
+        );
+
+        if i == 0 {
+            // First pane: create the session
+            tmux.new_session_with_command(Some(resume_session), &cmd);
+        } else if i % panes_per_window == 0 {
+            // Start of a new window (7th, 13th, etc.)
+            tmux.new_window(None, None, Some(resume_session));
+            tmux.send_keys(&cmd, None);
+        } else {
+            // Split within current window
+            let target = format!("{}:", resume_session);
+            split_pane_with_command(tmux, &target, &cmd);
+        }
+
+        // Re-tile after each split
+        let current_window = format!("{}:", resume_session);
+        tmux.execute_tmux_command_pub(&["select-layout", "-t", &current_window, "tiled"]);
+    }
+
+    tmux.switch_to_session(resume_session);
+
+    Ok(())
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn split_pane_with_command(tmux: &Tmux, target: &str, command: &str) {
+    let shell_cmd = format!("{} ; exec $SHELL", command);
+    tmux.execute_tmux_command_pub(&["split-window", "-t", target, &shell_cmd]);
 }
 
 pub enum SubCommandGiven {
