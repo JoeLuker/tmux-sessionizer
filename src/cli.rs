@@ -897,8 +897,6 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    let session_name = "resume-grid";
-
     // Build resume commands for each selected session
     let commands: Vec<String> = selected_sessions
         .iter()
@@ -911,9 +909,21 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    crate::grid::build_pane_grid(tmux, session_name, commands, args.panes_per_window)?;
+    // Detect context: if we're in the _pick session (startup), create a new session.
+    // Otherwise, add windows to the current session.
+    let current_session = tmux.display_message("'#S'")
+        .trim()
+        .replace('\'', "");
 
-    tmux.switch_to_session(session_name);
+    if current_session == "_pick" || current_session.is_empty() {
+        // Startup: create resume-grid session and switch to it
+        let session_name = "resume-grid";
+        crate::grid::build_pane_grid(tmux, Some(session_name), commands, args.panes_per_window)?;
+        tmux.switch_to_session(session_name);
+    } else {
+        // Already in a session: add windows here, no switch needed
+        crate::grid::build_pane_grid(tmux, None, commands, args.panes_per_window)?;
+    }
 
     Ok(())
 }
