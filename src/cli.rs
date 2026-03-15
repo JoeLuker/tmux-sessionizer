@@ -897,32 +897,34 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    // Build resume commands for each selected session
-    let commands: Vec<String> = selected_sessions
+    // Build grid panes with commands and labels
+    let panes: Vec<crate::grid::GridPane> = selected_sessions
         .iter()
         .map(|cs| {
-            format!(
+            let cmd = format!(
                 "cd {} && claude --resume {}",
                 shell_escape(&cs.project),
                 &cs.session_id
-            )
+            );
+            let label = format!("{} | {}", cs.project_name, truncate_str(&cs.last_message, 30));
+            crate::grid::GridPane { command: cmd, label }
         })
         .collect();
 
-    // Detect context: if we're in the _pick session (startup), create a new session.
+    // Detect context: if we're in a launcher session (startup), create a new session.
     // Otherwise, add windows to the current session.
     let current_session = tmux.display_message("'#S'")
         .trim()
         .replace('\'', "");
 
-    if current_session == "_pick" || current_session.is_empty() {
-        // Startup: create resume-grid session and switch to it
+    let is_launcher = current_session.starts_with("_tab-") || current_session.is_empty();
+
+    if is_launcher {
         let session_name = "resume-grid";
-        crate::grid::build_pane_grid(tmux, Some(session_name), commands, args.panes_per_window)?;
+        crate::grid::build_pane_grid(tmux, Some(session_name), panes, args.panes_per_window)?;
         tmux.switch_to_session(session_name);
     } else {
-        // Already in a session: add windows here, no switch needed
-        crate::grid::build_pane_grid(tmux, None, commands, args.panes_per_window)?;
+        crate::grid::build_pane_grid(tmux, None, panes, args.panes_per_window)?;
     }
 
     Ok(())
@@ -930,6 +932,14 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }
 
 pub enum SubCommandGiven {
