@@ -138,6 +138,11 @@ fn get_session_list(
         // Combine: active first, then inactive
         active_list.extend(inactive_list);
         (active_list, Some(active_names_owned))
+    } else if matches!(
+        config.session_sort_order,
+        Some(SessionSortOrderConfig::LastActivity)
+    ) {
+        (sessions.list_by_activity(), None)
     } else {
         // Default behavior: alphabetically sorted
         (all_sessions, None)

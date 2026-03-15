@@ -18,6 +18,7 @@ use crate::{
 pub struct Session {
     pub name: String,
     pub session_type: SessionType,
+    pub last_activity: i64,
 }
 
 pub enum SessionType {
@@ -31,7 +32,19 @@ pub enum SessionType {
 
 impl Session {
     pub fn new(name: String, session_type: SessionType) -> Self {
-        Session { name, session_type }
+        Session {
+            name,
+            session_type,
+            last_activity: 0,
+        }
+    }
+
+    pub fn with_activity(name: String, session_type: SessionType, last_activity: i64) -> Self {
+        Session {
+            name,
+            session_type,
+            last_activity,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -117,6 +130,7 @@ pub trait SessionContainer {
     fn find_session(&self, name: &str) -> Option<&Session>;
     fn insert_session(&mut self, name: String, repo: Session);
     fn list(&self) -> Vec<String>;
+    fn list_by_activity(&self) -> Vec<String>;
 }
 
 impl SessionContainer for HashMap<String, Session> {
@@ -133,6 +147,12 @@ impl SessionContainer for HashMap<String, Session> {
         list.sort();
 
         list
+    }
+
+    fn list_by_activity(&self) -> Vec<String> {
+        let mut entries: Vec<(&String, &Session)> = self.iter().collect();
+        entries.sort_by(|a, b| b.1.last_activity.cmp(&a.1.last_activity));
+        entries.into_iter().map(|(k, _)| k.to_owned()).collect()
     }
 }
 

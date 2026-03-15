@@ -156,6 +156,20 @@ impl RepoProvider {
         }
     }
 
+    pub fn last_commit_timestamp(&self) -> i64 {
+        match self {
+            RepoProvider::Git(repo) => repo
+                .head_commit()
+                .ok()
+                .and_then(|commit| {
+                    let time = commit.time().ok()?;
+                    Some(time.seconds)
+                })
+                .unwrap_or(0),
+            RepoProvider::Jujutsu(_) => 0,
+        }
+    }
+
     pub fn head_name(&self) -> Result<String> {
         match self {
             RepoProvider::Git(repo) => Ok(repo
@@ -286,7 +300,8 @@ pub fn find_repos(config: &Config) -> Result<HashMap<String, Vec<Session>>> {
             })?
             .to_string()?;
 
-        let session = Session::new(session_name, SessionType::Git(repo));
+        let timestamp = repo.last_commit_timestamp();
+        let session = Session::with_activity(session_name, SessionType::Git(repo), timestamp);
         if let Some(list) = repos.get_mut(&session.name) {
             list.push(session);
         } else {

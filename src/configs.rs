@@ -430,11 +430,12 @@ pub enum SessionSortOrderConfig {
     #[default]
     Alphabetical,
     LastAttached,
+    LastActivity,
 }
 
 impl ValueEnum for SessionSortOrderConfig {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Alphabetical, Self::LastAttached]
+        &[Self::Alphabetical, Self::LastAttached, Self::LastActivity]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
@@ -444,6 +445,9 @@ impl ValueEnum for SessionSortOrderConfig {
             }
             SessionSortOrderConfig::LastAttached => {
                 Some(clap::builder::PossibleValue::new("LastAttached"))
+            }
+            SessionSortOrderConfig::LastActivity => {
+                Some(clap::builder::PossibleValue::new("LastActivity"))
             }
         }
     }
