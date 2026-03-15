@@ -902,49 +902,64 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    let panes_per_window = args.panes_per_window;
-    let resume_session = "resume-grid";
+    let ppw = args.panes_per_window;
+    let session_name = "resume-grid";
 
     // Kill old resume-grid if it exists
-    tmux.kill_session(resume_session);
+    tmux.kill_session(session_name);
 
-    for (i, session) in selected_sessions.iter().enumerate() {
-        let cmd = format!(
+    for (i, cs) in selected_sessions.iter().enumerate() {
+        let resume_cmd = format!(
             "cd {} && claude --resume {}",
-            shell_escape(&session.project),
-            &session.session_id
+            shell_escape(&cs.project),
+            &cs.session_id
         );
+        let window_idx = i / ppw;
 
         if i == 0 {
-            // First pane: create the session
-            tmux.new_session_with_command(Some(resume_session), &cmd);
-        } else if i % panes_per_window == 0 {
-            // Start of a new window (7th, 13th, etc.)
-            tmux.new_window(None, None, Some(resume_session));
-            tmux.send_keys(&cmd, None);
+            // First pane: create session with first window
+            tmux.execute_tmux_command_pub(&[
+                "new-session", "-d", "-s", session_name, "-x", "200", "-y", "50",
+                "bash", "-c", &format!("{}; exec bash", resume_cmd),
+            ]);
+        } else if i % ppw == 0 {
+            // First pane of a new window
+            tmux.execute_tmux_command_pub(&[
+                "new-window", "-t", session_name,
+                "bash", "-c", &format!("{}; exec bash", resume_cmd),
+            ]);
         } else {
             // Split within current window
-            let target = format!("{}:", resume_session);
-            split_pane_with_command(tmux, &target, &cmd);
-        }
+            let target = format!("{}:{}", session_name, window_idx);
+            tmux.execute_tmux_command_pub(&[
+                "split-window", "-t", &target,
+                "bash", "-c", &format!("{}; exec bash", resume_cmd),
+            ]);
 
-        // Re-tile after each split
-        let current_window = format!("{}:", resume_session);
-        tmux.execute_tmux_command_pub(&["select-layout", "-t", &current_window, "tiled"]);
+            // Re-tile after each split to keep the grid even
+            tmux.execute_tmux_command_pub(&[
+                "select-layout", "-t", &target, "tiled",
+            ]);
+        }
     }
 
-    tmux.switch_to_session(resume_session);
+    // Final tiling pass on all windows
+    let num_windows = (selected_sessions.len() + ppw - 1) / ppw;
+    for w in 0..num_windows {
+        let target = format!("{}:{}", session_name, w);
+        tmux.execute_tmux_command_pub(&["select-layout", "-t", &target, "tiled"]);
+    }
+
+    // Select first window
+    tmux.execute_tmux_command_pub(&["select-window", "-t", &format!("{}:0", session_name)]);
+
+    tmux.switch_to_session(session_name);
 
     Ok(())
 }
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn split_pane_with_command(tmux: &Tmux, target: &str, command: &str) {
-    let shell_cmd = format!("{} ; exec $SHELL", command);
-    tmux.execute_tmux_command_pub(&["split-window", "-t", target, &shell_cmd]);
 }
 
 pub enum SubCommandGiven {
