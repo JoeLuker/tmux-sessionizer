@@ -3,27 +3,43 @@ use crate::{
     Result,
 };
 
+/// A pane to create in the grid — command to run + label for the border.
+pub struct GridPane {
+    pub command: String,
+    pub label: String,
+}
+
 /// Build a tiled pane grid across one or more tmux windows.
 ///
 /// If `session_name` is Some, creates a new session with that name.
 /// If `session_name` is None, adds windows to the current session.
 /// Each window gets up to `panes_per_window` panes in a "tiled" layout.
+/// Each pane gets a border label set via its pane title.
 pub fn build_pane_grid(
     tmux: &Tmux,
     session_name: Option<&str>,
-    commands: Vec<String>,
+    panes: Vec<GridPane>,
     panes_per_window: usize,
 ) -> Result<()> {
-    if commands.is_empty() {
+    if panes.is_empty() {
         return Ok(());
     }
 
+    // Wrap command to set pane title before running
+    let titled_cmd = |pane: &GridPane| -> String {
+        // printf sets the pane title via escape sequence, then runs the command
+        format!(
+            "printf '\\033]2;{}\\033\\\\'; {}",
+            pane.label.replace('\'', ""),
+            pane.command
+        )
+    };
+
     // Determine the target session — either create new or use current
     let target_session: String = if let Some(name) = session_name {
-        // New session mode: kill old, create fresh
         tmux.kill_session(name);
 
-        let output = tmux.new_session(Some(name), None, Some(&commands[0]));
+        let output = tmux.new_session(Some(name), None, Some(&titled_cmd(&panes[0])));
         if !output.status.success() {
             eprintln!(
                 "tms: failed to create session '{}': {}",
@@ -33,7 +49,6 @@ pub fn build_pane_grid(
         }
         name.to_string()
     } else {
-        // Current session mode: get current session name, create first window
         let current = tmux.display_message("'#S'")
             .trim()
             .replace('\'', "");
@@ -45,19 +60,17 @@ pub fn build_pane_grid(
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        // Send the first command to the new window
-        tmux.send_keys(&commands[0], None);
+        tmux.send_keys(&titled_cmd(&panes[0]), None);
 
         current
     };
 
     let mut current_window_pane_count: usize = 1;
 
-    for cmd in commands.iter().skip(1) {
-        let shell_cmd = format!("{}; exec bash", cmd);
+    for pane in panes.iter().skip(1) {
+        let shell_cmd = format!("{}; exec bash", titled_cmd(pane));
 
         if current_window_pane_count >= panes_per_window {
-            // Window is full — create a new window
             let output = tmux.new_window(None, None, Some(&target_session));
             if !output.status.success() {
                 eprintln!(
@@ -66,10 +79,9 @@ pub fn build_pane_grid(
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
-            tmux.send_keys(cmd, None);
+            tmux.send_keys(&titled_cmd(pane), None);
             current_window_pane_count = 1;
         } else {
-            // Split in the session (tmux targets the most recent window)
             let output = tmux.split_window_pane(Some(&target_session), Some(&shell_cmd));
             if !output.status.success() {
                 eprintln!(
