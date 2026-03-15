@@ -116,7 +116,19 @@ pub fn load_claude_sessions(max: usize) -> Result<Vec<ClaudeSession>> {
         }
     }
 
-    let mut sorted: Vec<ClaudeSession> = sessions.into_values().collect();
+    let mut sorted: Vec<ClaudeSession> = sessions
+        .into_values()
+        .filter(|s| s.timestamp != 0)
+        .map(|mut s| {
+            if s.last_message.is_empty() {
+                s.last_message = "(no messages)".to_string();
+            }
+            if s.project.is_empty() {
+                s.project_name = "(unknown)".to_string();
+            }
+            s
+        })
+        .collect();
     sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     sorted.truncate(max);
 

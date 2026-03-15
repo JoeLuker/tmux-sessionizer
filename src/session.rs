@@ -84,7 +84,7 @@ impl Session {
         let session_name = self.name.replace('.', "_");
 
         if !tmux.session_exists(&session_name) {
-            tmux.new_session(Some(&session_name), Some(&path));
+            tmux.new_session(Some(&session_name), Some(&path), None);
             tmux.set_up_tmux_env(repo, &session_name, config)?;
             tmux.run_session_create_script(self.path(), &session_name, config)?;
         }
@@ -98,7 +98,7 @@ impl Session {
         let session_name = self.name.replace('.', "_");
 
         if !tmux.session_exists(&session_name) {
-            tmux.new_session(Some(&session_name), path.to_str());
+            tmux.new_session(Some(&session_name), path.to_str(), None);
             tmux.run_session_create_script(path, &session_name, config)?;
         }
 
@@ -117,7 +117,7 @@ impl Session {
 
         if !tmux.session_exists(&session_name) {
             let ssh_command = format!("ssh -t {} 'cd {} && exec $SHELL'", host, remote_path);
-            tmux.new_session_with_command(Some(&session_name), &ssh_command);
+            tmux.new_session(Some(&session_name), None, Some(&ssh_command));
         }
 
         tmux.switch_to_session(&session_name);
