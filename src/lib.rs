@@ -5,6 +5,7 @@ pub mod error;
 pub mod keymap;
 pub mod marks;
 pub mod picker;
+pub mod remote;
 pub mod repos;
 pub mod session;
 pub mod tmux;

@@ -62,6 +62,8 @@ pub enum CliCommand {
     OpenSession(OpenSessionCommand),
     /// Manage list of sessions that can be instantly accessed by their index
     Marks(MarksCommand),
+    /// Refresh the cached project list for all configured remote hosts
+    RefreshRemote,
 }
 
 #[derive(Debug, Args)]
@@ -255,6 +257,12 @@ impl Cli {
 
             Some(CliCommand::Marks(args)) => {
                 marks_command(args, config, tmux)?;
+                Ok(SubCommandGiven::Yes)
+            }
+
+            Some(CliCommand::RefreshRemote) => {
+                let total = crate::remote::refresh_remote_cache(&config)?;
+                println!("Refreshed remote cache: {} total projects", total);
                 Ok(SubCommandGiven::Yes)
             }
 
