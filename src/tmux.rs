@@ -36,8 +36,11 @@ impl Tmux {
             .unwrap_or_else(|_| panic!("Failed to execute the tmux command `{args:?}`"))
     }
 
-    pub fn split_window_pane(&self, target: Option<&str>, command: Option<&str>) -> process::Output {
+    pub fn split_window_pane(&self, target: Option<&str>, horizontal: bool, command: Option<&str>) -> process::Output {
         let mut args = vec!["split-window"];
+        if horizontal {
+            args.push("-h");
+        }
         if let Some(t) = target {
             args.extend(["-t", t]);
         }
