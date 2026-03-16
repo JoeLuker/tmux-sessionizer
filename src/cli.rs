@@ -70,8 +70,8 @@ pub enum CliCommand {
 
 #[derive(Debug, Args)]
 pub struct ResumeCommand {
-    #[arg(short, long, default_value = "50")]
-    /// Maximum number of recent sessions to show
+    #[arg(short, long, default_value = "10000")]
+    /// Maximum number of recent sessions to load
     max: usize,
     #[arg(short, long, default_value = "6")]
     /// Panes per window before creating a new tab
@@ -860,20 +860,79 @@ fn open_session_completion_candidates() -> Vec<CompletionCandidate> {
 }
 
 fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<()> {
-    use crate::resume::load_claude_sessions;
+    use crate::resume::{get_active_session_ids, group_by_directory, load_claude_sessions};
 
+    // 1. Load all sessions (no artificial cap)
     let all_sessions = load_claude_sessions(args.max, &config)?;
     if all_sessions.is_empty() {
         eprintln!("No Claude sessions found");
         return Ok(());
     }
 
-    let display_lines: Vec<String> = all_sessions.iter().map(|s| s.display_line()).collect();
+    // 2. Detect active session IDs
+    let active_ids = get_active_session_ids();
 
-    // Multi-select picker — Tab to toggle, ! to toggle skip-permissions, ESC when done
+    // 3. Group sessions by directory
+    let directories = group_by_directory(&all_sessions, &active_ids);
+    if directories.is_empty() {
+        eprintln!("No project directories found");
+        return Ok(());
+    }
+
+    // Stage 1: Directory picker (single-select)
+    let dir_display_lines: Vec<String> = directories.iter().map(|d| d.display_line()).collect();
+
+    let selected_dir = {
+        let mut picker = crate::picker::Picker::new(
+            &dir_display_lines,
+            None,
+            config.shortcuts.as_ref(),
+            crate::picker::InputPosition::Top,
+            tmux,
+        )
+        .set_colors(config.picker_colors.as_ref());
+        picker.run()?
+    };
+
+    let selected_dir = match selected_dir {
+        Some(line) => line,
+        None => return Ok(()), // ESC in stage 1 = exit entirely
+    };
+
+    // Find which directory was selected
+    let dir_idx = match dir_display_lines.iter().position(|dl| dl == &selected_dir) {
+        Some(idx) => idx,
+        None => return Ok(()),
+    };
+    let chosen_dir = &directories[dir_idx];
+    let dir_key = chosen_dir.group_key();
+
+    // Filter sessions to only those matching the selected directory
+    let filtered_sessions: Vec<&crate::resume::ClaudeSession> = all_sessions
+        .iter()
+        .filter(|s| {
+            let session_key = match &s.host {
+                Some(host) => format!("{}@{}", s.project, host),
+                None => s.project.clone(),
+            };
+            session_key == dir_key
+        })
+        .collect();
+
+    if filtered_sessions.is_empty() {
+        eprintln!("No sessions found for selected directory");
+        return Ok(());
+    }
+
+    // Stage 2: Session picker (multi-select with status indicators)
+    let session_display_lines: Vec<String> = filtered_sessions
+        .iter()
+        .map(|s| s.session_display_line(&active_ids))
+        .collect();
+
     let (selected_lines, skip_perms_set) = {
         let mut picker = crate::picker::Picker::new(
-            &display_lines,
+            &session_display_lines,
             None,
             config.shortcuts.as_ref(),
             config.input_position.unwrap_or_default(),
@@ -894,8 +953,8 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
     let selected_sessions: Vec<crate::resume::ClaudeSession> = selected_lines
         .iter()
         .filter_map(|line| {
-            let idx = display_lines.iter().position(|dl| dl == line)?;
-            let mut session = all_sessions[idx].clone();
+            let idx = session_display_lines.iter().position(|dl| dl == line)?;
+            let mut session = filtered_sessions[idx].clone();
             session.skip_permissions = skip_perms_set.contains(line);
             Some(session)
         })

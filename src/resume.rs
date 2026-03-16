@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     process::{Command, Stdio},
@@ -23,6 +23,13 @@ struct HistoryEntry {
     session_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionFile {
+    pid: Option<u64>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
     pub session_id: String,
@@ -34,6 +41,8 @@ pub struct ClaudeSession {
     /// None = local, Some(host) = remote
     pub host: Option<String>,
     pub skip_permissions: bool,
+    /// Whether the last message in history for this session was /exit
+    pub exited: bool,
 }
 
 impl ClaudeSession {
@@ -45,6 +54,19 @@ impl ClaudeSession {
             None => self.project_name.clone(),
         };
         format!("{} │ {:<35} │ {}", time, name, msg)
+    }
+
+    pub fn session_display_line(&self, active_ids: &HashSet<String>) -> String {
+        let time = format_timestamp(self.timestamp);
+        let msg = truncate(&self.first_message, 45);
+        let status = if active_ids.contains(&self.session_id) {
+            " [active]"
+        } else if self.exited {
+            " [exited]"
+        } else {
+            ""
+        };
+        format!("{} │ {}{}", time, msg, status)
     }
 
     pub fn resume_command(&self) -> String {
@@ -68,6 +90,126 @@ impl ClaudeSession {
         let perms = if self.skip_permissions { " [!]" } else { "" };
         format!("{} | {}{}", name, truncate(&self.first_message, 30), perms)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectDirectory {
+    pub project: String,
+    pub project_name: String,
+    pub host: Option<String>,
+    pub session_count: usize,
+    pub latest_timestamp: i64,
+    pub has_active: bool,
+}
+
+impl ProjectDirectory {
+    pub fn display_line(&self) -> String {
+        let time = format_timestamp(self.latest_timestamp);
+        let count_str = if self.session_count == 1 {
+            "1 session ".to_string()
+        } else {
+            format!("{} sessions", self.session_count)
+        };
+        let name = match &self.host {
+            Some(host) => format!("{}@{}", self.project_name, host),
+            None => self.project_name.clone(),
+        };
+        let active = if self.has_active { " [active]" } else { "" };
+        format!("{:<12} │ {:<35} │ {}{}", count_str, name, time, active)
+    }
+
+    /// Key used to match sessions back to this directory grouping.
+    pub fn group_key(&self) -> String {
+        match &self.host {
+            Some(host) => format!("{}@{}", self.project, host),
+            None => self.project.clone(),
+        }
+    }
+}
+
+/// Read all `~/.claude/sessions/*.json` files, parse each for `pid` and `sessionId`,
+/// check if the PID is alive, and return session IDs of alive processes.
+pub fn get_active_session_ids() -> HashSet<String> {
+    let mut active = HashSet::new();
+
+    let sessions_dir = match dirs::home_dir() {
+        Some(home) => home.join(".claude/sessions"),
+        None => return active,
+    };
+
+    let entries = match fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return active,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let session_file: SessionFile = match serde_json::from_str(&content) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let (Some(pid), Some(session_id)) = (session_file.pid, session_file.session_id) else {
+            continue;
+        };
+
+        // Check if PID is alive using kill -0
+        let is_alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if is_alive {
+            active.insert(session_id);
+        }
+    }
+
+    active
+}
+
+/// Group sessions by their project directory (and host for remote sessions).
+pub fn group_by_directory(sessions: &[ClaudeSession], active_ids: &HashSet<String>) -> Vec<ProjectDirectory> {
+    let mut map: HashMap<String, ProjectDirectory> = HashMap::new();
+
+    for session in sessions {
+        let key = match &session.host {
+            Some(host) => format!("{}@{}", session.project, host),
+            None => session.project.clone(),
+        };
+
+        let entry = map.entry(key).or_insert_with(|| ProjectDirectory {
+            project: session.project.clone(),
+            project_name: session.project_name.clone(),
+            host: session.host.clone(),
+            session_count: 0,
+            latest_timestamp: 0,
+            has_active: false,
+        });
+
+        entry.session_count += 1;
+        if session.timestamp > entry.latest_timestamp {
+            entry.latest_timestamp = session.timestamp;
+        }
+        if active_ids.contains(&session.session_id) {
+            entry.has_active = true;
+        }
+    }
+
+    let mut dirs: Vec<ProjectDirectory> = map.into_values().collect();
+    dirs.sort_by(|a, b| b.latest_timestamp.cmp(&a.latest_timestamp));
+    dirs
 }
 
 fn format_timestamp(ts: i64) -> String {
@@ -99,6 +241,8 @@ fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
     let mut sessions: HashMap<String, ClaudeSession> = HashMap::new();
     // Track the earliest timestamp per session to identify the first message
     let mut first_timestamps: HashMap<String, i64> = HashMap::new();
+    // Track the latest display text per session to detect /exit as last message
+    let mut latest_displays: HashMap<String, (i64, String)> = HashMap::new();
 
     for line in content.lines() {
         let entry: HistoryEntry = match serde_json::from_str(line) {
@@ -128,6 +272,15 @@ fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
             None => session_id.clone(),
         };
 
+        // Track the latest display text to detect /exit
+        if !display.is_empty() {
+            let entry_latest = latest_displays.entry(unique_id.clone()).or_insert((0, String::new()));
+            if timestamp >= entry_latest.0 {
+                entry_latest.0 = timestamp;
+                entry_latest.1 = display.clone();
+            }
+        }
+
         if let Some(existing) = sessions.get_mut(&unique_id) {
             // Update last_message with the latest non-command message
             if timestamp > existing.timestamp {
@@ -156,14 +309,19 @@ fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
                 timestamp,
                 host: host.map(String::from),
                 skip_permissions: false,
+                exited: false,
             });
         }
     }
 
     sessions
-        .into_values()
-        .filter(|s| s.timestamp != 0)
-        .map(|mut s| {
+        .into_iter()
+        .filter(|(_, s)| s.timestamp != 0)
+        .map(|(unique_id, mut s)| {
+            // Check if the last message for this session was /exit
+            if let Some((_, ref last_display)) = latest_displays.get(&unique_id) {
+                s.exited = last_display == "/exit";
+            }
             // If first_message is empty, fall back to last_message
             if s.first_message.is_empty() {
                 s.first_message = s.last_message.clone();
@@ -225,7 +383,9 @@ pub fn load_claude_sessions(max: usize, config: &Config) -> Result<Vec<ClaudeSes
     }
 
     all_sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    all_sessions.truncate(max);
+    if max < all_sessions.len() {
+        all_sessions.truncate(max);
+    }
 
     Ok(all_sessions)
 }
