@@ -862,9 +862,9 @@ fn open_session_completion_candidates() -> Vec<CompletionCandidate> {
 fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<()> {
     use crate::resume::load_claude_sessions;
 
-    let all_sessions = load_claude_sessions(args.max)?;
+    let all_sessions = load_claude_sessions(args.max, &config)?;
     if all_sessions.is_empty() {
-        eprintln!("No Claude sessions found in ~/.claude/history.jsonl");
+        eprintln!("No Claude sessions found");
         return Ok(());
     }
 
@@ -901,13 +901,10 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
     let panes: Vec<crate::grid::GridPane> = selected_sessions
         .iter()
         .map(|cs| {
-            let cmd = format!(
-                "cd {} && claude --resume {}",
-                shell_escape(&cs.project),
-                &cs.session_id
-            );
-            let label = format!("{} | {}", cs.project_name, truncate_str(&cs.last_message, 30));
-            crate::grid::GridPane { command: cmd, label }
+            crate::grid::GridPane {
+                command: cs.resume_command(),
+                label: cs.label(),
+            }
         })
         .collect();
 
@@ -928,18 +925,6 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
     }
 
     Ok(())
-}
-
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
 }
 
 pub enum SubCommandGiven {
