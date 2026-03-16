@@ -969,21 +969,10 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         })
         .collect();
 
-    // Detect context: if we're in a launcher session (startup), create a new session.
-    // Otherwise, add windows to the current session.
-    let current_session = tmux.display_message("'#S'")
-        .trim()
-        .replace('\'', "");
-
-    let is_launcher = current_session.starts_with("_tab-") || current_session.is_empty();
-
-    if is_launcher {
-        let session_name = "resume-grid";
-        crate::grid::build_pane_grid(tmux, Some(session_name), panes, args.panes_per_window)?;
-        tmux.switch_to_session(session_name);
-    } else {
-        crate::grid::build_pane_grid(tmux, None, panes, args.panes_per_window)?;
-    }
+    // Always add windows to the current session.
+    // In -CC mode, iTerm2 only sees windows from the attached session.
+    // Creating a separate session would make windows invisible to iTerm2.
+    crate::grid::build_pane_grid(tmux, None, panes, args.panes_per_window)?;
 
     Ok(())
 }
