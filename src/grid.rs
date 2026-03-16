@@ -66,6 +66,15 @@ pub fn build_pane_grid(
     };
 
     let mut current_window_pane_count: usize = 1;
+    let mut window_start_indices: Vec<String> = Vec::new();
+
+    // Track the current window for the final tiling pass
+    let current_win_idx = tmux.display_message("'#{window_index}'")
+        .trim()
+        .replace('\'', "");
+    if !current_win_idx.is_empty() {
+        window_start_indices.push(current_win_idx);
+    }
 
     for pane in panes.iter().skip(1) {
         let shell_cmd = format!("{}; exec bash", titled_cmd(pane));
@@ -81,6 +90,14 @@ pub fn build_pane_grid(
             }
             tmux.send_keys(&titled_cmd(pane), None);
             current_window_pane_count = 1;
+
+            // Track new window index
+            let win_idx = tmux.display_message("'#{window_index}'")
+                .trim()
+                .replace('\'', "");
+            if !win_idx.is_empty() {
+                window_start_indices.push(win_idx);
+            }
         } else {
             let output = tmux.split_window_pane(Some(&target_session), Some(&shell_cmd));
             if !output.status.success() {
@@ -91,12 +108,11 @@ pub fn build_pane_grid(
                 );
             }
             current_window_pane_count += 1;
-
-            tmux.select_layout(&target_session, "tiled");
+            // No tiling here — wait until all panes in the window are created
         }
     }
 
-    // Final tiling pass on all windows
+    // Tile all windows once after all panes are created
     let windows_output = tmux.list_windows("#{window_index}", Some(&target_session));
     for win_idx in windows_output.lines() {
         let win_idx = win_idx.trim();

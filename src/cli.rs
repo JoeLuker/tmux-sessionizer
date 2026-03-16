@@ -870,8 +870,8 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
 
     let display_lines: Vec<String> = all_sessions.iter().map(|s| s.display_line()).collect();
 
-    // Multi-select picker — Tab to toggle, ESC when done
-    let selected_lines = {
+    // Multi-select picker — Tab to toggle, ! to toggle skip-permissions, ESC when done
+    let (selected_lines, skip_perms_set) = {
         let mut picker = crate::picker::Picker::new(
             &display_lines,
             None,
@@ -881,30 +881,32 @@ fn resume_command(args: &ResumeCommand, config: Config, tmux: &Tmux) -> Result<(
         )
         .set_colors(config.picker_colors.as_ref())
         .set_multi_select(true);
-        picker.run_multi()?
+        let lines = picker.run_multi()?;
+        let perms = picker.get_skip_permissions().clone();
+        (lines, perms)
     };
 
     if selected_lines.is_empty() {
         return Ok(());
     }
 
-    // Map selected display lines back to sessions
-    let selected_sessions: Vec<&crate::resume::ClaudeSession> = selected_lines
+    // Map selected display lines back to sessions, applying skip_permissions
+    let selected_sessions: Vec<crate::resume::ClaudeSession> = selected_lines
         .iter()
         .filter_map(|line| {
             let idx = display_lines.iter().position(|dl| dl == line)?;
-            Some(&all_sessions[idx])
+            let mut session = all_sessions[idx].clone();
+            session.skip_permissions = skip_perms_set.contains(line);
+            Some(session)
         })
         .collect();
 
     // Build grid panes with commands and labels
     let panes: Vec<crate::grid::GridPane> = selected_sessions
         .iter()
-        .map(|cs| {
-            crate::grid::GridPane {
-                command: cs.resume_command(),
-                label: cs.label(),
-            }
+        .map(|cs| crate::grid::GridPane {
+            command: cs.resume_command(),
+            label: cs.label(),
         })
         .collect();
 
