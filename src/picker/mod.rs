@@ -55,6 +55,7 @@ pub struct Picker<'a> {
     active_sessions: Option<HashSet<String>>,
     multi_select: bool,
     selected_items: HashSet<String>,
+    skip_permissions: HashSet<String>,
 }
 
 impl<'a> Picker<'a> {
@@ -92,6 +93,7 @@ impl<'a> Picker<'a> {
             active_sessions: None,
             multi_select: false,
             selected_items: HashSet::new(),
+            skip_permissions: HashSet::new(),
         }
     }
 
@@ -172,6 +174,8 @@ impl<'a> Picker<'a> {
                             } else if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
                                 // Ctrl-D to finish
                                 return Ok(self.get_all_selected());
+                            } else if key.code == KeyCode::Char('!') {
+                                self.toggle_skip_permissions();
                             } else if let KeyCode::Char(c) = key.code {
                                 self.update_filter(c)
                             }
@@ -304,8 +308,14 @@ impl<'a> Picker<'a> {
             .map(|(_idx, item)| {
                 let text = item.data.as_str();
                 let checked = multi && self.is_item_selected(text);
+                let has_skip = multi && self.skip_permissions.contains(text);
                 let prefix = if multi {
-                    if checked { "[x] " } else { "[ ] " }
+                    match (checked, has_skip) {
+                        (true, true) => "[x!] ",
+                        (true, false) => "[x] ",
+                        (false, true) => "[!] ",
+                        (false, false) => "[ ] ",
+                    }
                 } else {
                     ""
                 };
@@ -342,7 +352,7 @@ impl<'a> Picker<'a> {
                     .title_position(title_position)
                     .title(if self.multi_select {
                         format!(
-                            "{} selected | {}/{} | Tab:toggle ESC:done",
+                            "{} selected | {}/{} | Tab:toggle !:perms ESC:done",
                             self.selected_items.len(),
                             snapshot.matched_item_count(),
                             snapshot.item_count()
@@ -416,6 +426,23 @@ impl<'a> Picker<'a> {
         }
 
         None
+    }
+
+    pub fn get_skip_permissions(&self) -> &HashSet<String> {
+        &self.skip_permissions
+    }
+
+    fn toggle_skip_permissions(&mut self) {
+        if let Some(index) = self.selection.selected() {
+            if let Some(item) = self.matcher.snapshot().get_matched_item(index as u32) {
+                let data = item.data.clone();
+                if self.skip_permissions.contains(&data) {
+                    self.skip_permissions.remove(&data);
+                } else {
+                    self.skip_permissions.insert(data);
+                }
+            }
+        }
     }
 
     fn toggle_selected(&mut self) {

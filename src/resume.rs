@@ -28,16 +28,18 @@ pub struct ClaudeSession {
     pub session_id: String,
     pub project: String,
     pub project_name: String,
+    pub first_message: String,
     pub last_message: String,
     pub timestamp: i64,
     /// None = local, Some(host) = remote
     pub host: Option<String>,
+    pub skip_permissions: bool,
 }
 
 impl ClaudeSession {
     pub fn display_line(&self) -> String {
         let time = format_timestamp(self.timestamp);
-        let msg = truncate(&self.last_message, 50);
+        let msg = truncate(&self.first_message, 50);
         let name = match &self.host {
             Some(host) => format!("{}@{}", self.project_name, host),
             None => self.project_name.clone(),
@@ -46,7 +48,12 @@ impl ClaudeSession {
     }
 
     pub fn resume_command(&self) -> String {
-        let resume = format!("cd {} && claude --resume {}", self.project, self.session_id);
+        let skip = if self.skip_permissions {
+            " --dangerously-skip-permissions"
+        } else {
+            ""
+        };
+        let resume = format!("cd {} && claude{} --resume {}", self.project, skip, self.session_id);
         match &self.host {
             Some(host) => format!("ssh -t {} '{}'", host, resume.replace('\'', "'\\''")),
             None => resume,
@@ -58,7 +65,8 @@ impl ClaudeSession {
             Some(host) => format!("{}@{}", self.project_name, host),
             None => self.project_name.clone(),
         };
-        format!("{} | {}", name, truncate(&self.last_message, 30))
+        let perms = if self.skip_permissions { " [!]" } else { "" };
+        format!("{} | {}{}", name, truncate(&self.first_message, 30), perms)
     }
 }
 
@@ -89,6 +97,8 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
     let mut sessions: HashMap<String, ClaudeSession> = HashMap::new();
+    // Track the earliest timestamp per session to identify the first message
+    let mut first_timestamps: HashMap<String, i64> = HashMap::new();
 
     for line in content.lines() {
         let entry: HistoryEntry = match serde_json::from_str(line) {
@@ -119,20 +129,33 @@ fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
         };
 
         if let Some(existing) = sessions.get_mut(&unique_id) {
+            // Update last_message with the latest non-command message
             if timestamp > existing.timestamp {
                 existing.timestamp = timestamp;
                 if !is_command && !display.is_empty() {
-                    existing.last_message = display;
+                    existing.last_message = display.clone();
                 }
             }
+            // Update first_message with the earliest non-command message
+            let first_ts = first_timestamps.get(&unique_id).copied().unwrap_or(i64::MAX);
+            if !is_command && !display.is_empty() && timestamp <= first_ts {
+                existing.first_message = display;
+                first_timestamps.insert(unique_id, timestamp);
+            }
         } else {
+            let msg = if is_command { String::new() } else { display };
+            if !msg.is_empty() {
+                first_timestamps.insert(unique_id.clone(), timestamp);
+            }
             sessions.insert(unique_id, ClaudeSession {
                 session_id,
                 project,
                 project_name,
-                last_message: if is_command { String::new() } else { display },
+                first_message: msg.clone(),
+                last_message: msg,
                 timestamp,
                 host: host.map(String::from),
+                skip_permissions: false,
             });
         }
     }
@@ -141,8 +164,15 @@ fn parse_history(content: &str, host: Option<&str>) -> Vec<ClaudeSession> {
         .into_values()
         .filter(|s| s.timestamp != 0)
         .map(|mut s| {
+            // If first_message is empty, fall back to last_message
+            if s.first_message.is_empty() {
+                s.first_message = s.last_message.clone();
+            }
             if s.last_message.is_empty() {
                 s.last_message = "(no messages)".to_string();
+            }
+            if s.first_message.is_empty() {
+                s.first_message = "(no messages)".to_string();
             }
             if s.project.is_empty() {
                 s.project_name = "(unknown)".to_string();
